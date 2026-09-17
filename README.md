@@ -36,6 +36,17 @@ channel, and API endpoint they need to read/write. As long as they match that
 contract, their piece (dashboard or agents) will plug straight into this backend
 with zero changes on either side.
 
+## Wallet-to-wallet transfers
+
+`POST /transfer` moves **cash only** between `wallet:user` and `wallet:agent` —
+no holdings change, and it is not a trade. It's implemented separately from
+`/trade` in `wallet.py` (`execute_transfer`, distinct from `execute_trade`),
+uses a Redis `WATCH`/`MULTI`/`EXEC` transaction so the debit and credit are
+atomic, and logs to its own capped `wallet_transfer_log` key rather than
+`trade_log`. The dashboard has a small "Transfer cash" control next to the
+user's wallet panel (User → Agent / Agent → User). See `REDIS_CONTRACT.md`
+for the exact request/response shape and `GET /transfers` for the log.
+
 ## Moving to 3 laptops later
 
 Only `REDIS_HOST` in `config.py` needs to change on each machine to point at

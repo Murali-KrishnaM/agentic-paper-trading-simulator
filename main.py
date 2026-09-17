@@ -48,6 +48,12 @@ class NewsInject(BaseModel):
     headline: str
 
 
+class TransferRequest(BaseModel):
+    from_wallet: str   # "user" or "agent"
+    to_wallet: str     # "user" or "agent"
+    amount: float
+
+
 class RiskSetting(BaseModel):
     value: str       # "conservative" or "aggressive"
 
@@ -99,6 +105,21 @@ def post_trade(req: TradeRequest):
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+@app.post("/transfer")
+def post_transfer(req: TransferRequest):
+    """Cash-only move between wallet:user and wallet:agent. Not a trade."""
+    result = wallet.execute_transfer(req.from_wallet, req.to_wallet, req.amount)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/transfers")
+def get_transfers(limit: int = 50):
+    raw_list = r.lrange("wallet_transfer_log", 0, limit - 1)
+    return [json.loads(x) for x in raw_list]
 
 
 @app.get("/trades")

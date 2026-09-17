@@ -47,6 +47,76 @@ def _log_trade(wallet_id, ticker, side, qty, price, reason):
     r.ltrim("trade_log", 0, 199)  # keep last 200
 
 
+# Cash-only movement between the two existing wallets. Deliberately separate
+# from trade_log / execute_trade: a transfer is not a trade, never touches
+# holdings, and must never be confused with BUY/SELL semantics.
+_VALID_WALLETS = ("user", "agent")
+
+
+def _log_transfer(from_wallet: str, to_wallet: str, amount: float):
+    entry = {
+        "from": from_wallet, "to": to_wallet,
+        "amount": amount, "ts": time.time(),
+    }
+    r.lpush("wallet_transfer_log", json.dumps(entry))
+    r.ltrim("wallet_transfer_log", 0, 199)  # keep last 200
+
+
+def execute_transfer(from_wallet: str, to_wallet: str, amount: float) -> dict:
+    """
+    Moves CASH ONLY from one existing wallet to the other. Holdings are never
+    touched. Atomic: uses Redis WATCH/MULTI/EXEC on both wallet keys so a
+    failed operation cannot leave one wallet debited without the other
+    credited (either both updates land, or neither does).
+
+    Returns {"ok": True, "from_wallet": {...}, "to_wallet": {...}} or
+    {"ok": False, "error": "..."}.
+    """
+    if from_wallet not in _VALID_WALLETS or to_wallet not in _VALID_WALLETS:
+        return {"ok": False, "error": "wallet must be 'user' or 'agent'"}
+    if from_wallet == to_wallet:
+        return {"ok": False, "error": "source and destination wallet must differ"}
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "amount must be a number"}
+    if not (amount > 0):
+        return {"ok": False, "error": "amount must be positive"}
+
+    from_key = _wallet_key(from_wallet)
+    to_key = _wallet_key(to_wallet)
+
+    with r.pipeline() as pipe:
+        try:
+            pipe.watch(from_key, to_key)
+
+            from_raw = pipe.get(from_key)
+            to_raw = pipe.get(to_key)
+            if not from_raw or not to_raw:
+                pipe.unwatch()
+                return {"ok": False, "error": "unknown wallet"}
+
+            from_w = json.loads(from_raw)
+            to_w = json.loads(to_raw)
+
+            if amount > from_w["cash"]:
+                pipe.unwatch()
+                return {"ok": False, "error": "insufficient cash"}
+
+            from_w["cash"] -= amount
+            to_w["cash"] += amount
+
+            pipe.multi()
+            pipe.set(from_key, json.dumps(from_w))
+            pipe.set(to_key, json.dumps(to_w))
+            pipe.execute()  # raises WatchError if either key changed concurrently
+        except redis.WatchError:
+            return {"ok": False, "error": "wallet state changed concurrently, please retry"}
+
+    _log_transfer(from_wallet, to_wallet, amount)
+    return {"ok": True, "from_wallet": get_wallet(from_wallet), "to_wallet": get_wallet(to_wallet)}
+
+
 def execute_trade(wallet_id: str, ticker: str, side: str, qty: int, reason: str = None) -> dict:
     """
     Executes a buy or sell against the given wallet.

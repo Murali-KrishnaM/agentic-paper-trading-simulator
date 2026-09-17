@@ -72,6 +72,19 @@ input::placeholder{color:var(--ink-faint)}
 .col{min-height:0;overflow:auto;scrollbar-width:thin}
 .col + .col{border-left:1px solid var(--line)}
 
+/* Right rail: agent wallet stays fixed height at top, trade tape and news
+   split the remaining vertical space and each scroll independently, so a
+   long trade tape never pushes news out of view. */
+.col[aria-label="Agent and news"]{
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.col[aria-label="Agent and news"] > .panel:first-child{flex:0 0 auto}
+.col[aria-label="Agent and news"] > .panel.scroll-panel{
+  flex:1 1 0;min-height:0;display:flex;flex-direction:column;overflow:hidden;
+}
+.scroll-panel .panel-head{flex:0 0 auto}
+.scroll-panel .panel-body{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:thin}
+
 /* ---------- panel primitives ---------- */
 .panel{border-bottom:1px solid var(--line)}
 .panel-head{
@@ -181,6 +194,11 @@ input::placeholder{color:var(--ink-faint)}
   .holdings{border-left:none;border-top:1px solid var(--line)}
   body{height:auto}
   .app{height:auto}
+  /* On narrow screens the page itself scrolls, so let trade tape and news
+     flow naturally instead of each claiming their own fixed-height pane. */
+  .col[aria-label="Agent and news"]{display:block;overflow:visible}
+  .col[aria-label="Agent and news"] > .panel.scroll-panel{display:block;flex:none;max-height:420px}
+  .scroll-panel .panel-body{overflow-y:auto;max-height:360px}
 }
 </style>
 </head>
@@ -240,6 +258,16 @@ input::placeholder{color:var(--ink-faint)}
           <div class="cash num" id="userCash">—</div>
           <div style="font-size:11px;color:var(--ink-faint);margin-bottom:6px">Portfolio value <span class="num" id="userEquity">—</span></div>
           <div id="userHoldings"><div class="empty" style="padding:10px 0">No positions yet. Buy something to start.</div></div>
+
+          <div class="transfer-box" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft)">
+            <div style="font-size:11.5px;color:var(--ink-dim);margin-bottom:7px">Transfer cash</div>
+            <input id="xferAmt" class="num" type="number" min="0" step="0.01" placeholder="Amount" inputmode="decimal" style="margin-bottom:8px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+              <button id="xferToAgent" style="padding:8px;border-radius:4px;border:1px solid var(--line);font-size:11.5px;font-weight:600">User → Agent</button>
+              <button id="xferToUser" style="padding:8px;border-radius:4px;border:1px solid var(--line);font-size:11.5px;font-weight:600">Agent → User</button>
+            </div>
+            <div class="msg" id="xferMsg" role="status" style="margin-top:6px"></div>
+          </div>
         </div>
       </div>
     </section>
@@ -255,15 +283,17 @@ input::placeholder{color:var(--ink-faint)}
         <div id="agHoldings"></div>
       </div>
 
-      <div class="panel">
+      <div class="panel scroll-panel">
         <div class="panel-head">Trade tape <span class="hint">you and the agent</span></div>
-        <div id="tape"><div class="empty">No trades yet.</div></div>
+        <div class="panel-body" id="tape"><div class="empty">No trades yet.</div></div>
       </div>
 
-      <div class="panel">
+      <div class="panel scroll-panel">
         <div class="panel-head">News <span class="hint" id="newsSym"></span></div>
-        <div id="injectBox"></div>
-        <div id="news"><div class="empty">No headlines.</div></div>
+        <div class="panel-body">
+          <div id="injectBox"></div>
+          <div id="news"><div class="empty">No headlines.</div></div>
+        </div>
       </div>
     </section>
   </div>
@@ -601,6 +631,40 @@ function renderAgentWallet() {
   holdingRows(w, $("agHoldings"), "The agent is holding cash.");
 }
 
+/* ---------- wallet-to-wallet transfer ---------- */
+async function doTransfer(fromWallet, toWallet) {
+  const amtInput = $("xferAmt");
+  const msg = $("xferMsg");
+  const amount = parseFloat(amtInput.value);
+  if (!(amount > 0)) {
+    msg.className = "msg err";
+    msg.textContent = "Enter an amount greater than 0.";
+    return;
+  }
+  $("xferToAgent").disabled = true;
+  $("xferToUser").disabled = true;
+  msg.className = "msg";
+  msg.textContent = "Transferring…";
+  try {
+    await api("/transfer", {
+      method: "POST",
+      body: JSON.stringify({ from_wallet: fromWallet, to_wallet: toWallet, amount })
+    });
+    msg.className = "msg ok";
+    msg.textContent = "Transferred " + money(amount) + " from " + fromWallet + " to " + toWallet + ".";
+    amtInput.value = "";
+    await pullWallets();
+  } catch (e) {
+    msg.className = "msg err";
+    msg.textContent = e.message || "Transfer failed.";
+  } finally {
+    $("xferToAgent").disabled = false;
+    $("xferToUser").disabled = false;
+  }
+}
+$("xferToAgent").addEventListener("click", () => doTransfer("user", "agent"));
+$("xferToUser").addEventListener("click", () => doTransfer("agent", "user"));
+
 /* ---------- trading ---------- */
 $("sideToggle").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-side]"); if (!b) return;
@@ -686,7 +750,10 @@ async function pullNews() {
   const sym = state.selected; if (!sym) return;
   try {
     const n = await api("/news/" + encodeURIComponent(sym));
-    state.news = Array.isArray(n) ? n : [];
+    const list = Array.isArray(n) ? n.slice() : [];
+    // Backend appends headlines in arrival order (oldest first); show newest first.
+    list.sort((a, b) => (toMs(b && b.ts) || 0) - (toMs(a && a.ts) || 0));
+    state.news = list;
     renderNews(); setConn(true);
   } catch (e) { setConn(false); }
 }
