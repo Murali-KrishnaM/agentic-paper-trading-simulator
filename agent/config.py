@@ -11,7 +11,9 @@ so moving an agent to another laptop on the LAN is a one-line change
 """
 
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 # --------------------------------------------------------------------------
 # The one variable that matters: where the teammate's FastAPI backend lives.
 # --------------------------------------------------------------------------
